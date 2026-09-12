@@ -1,13 +1,9 @@
 services:
   - type: web
     name: sarlo-uz-bot
-    env: python
+    env: docker
     plan: free
     region: frankfurt
-    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
-    startCommand: "python bot.py"
     envVars:
       - key: BOT_TOKEN
         sync: false
-      - key: PYTHON_VERSION
-        value: 3.11.9
