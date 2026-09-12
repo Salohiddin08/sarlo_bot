@@ -1,5 +1,5 @@
 services:
-  - type: worker
+  - type: web
     name: sarlo-uz-bot
     env: python
     plan: free

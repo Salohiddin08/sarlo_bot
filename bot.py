@@ -20,6 +20,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart
 from aiogram.types import Message
+from aiohttp import web
 from dotenv import load_dotenv
 
 # --------------------------------------------------------------------------
@@ -371,8 +372,20 @@ async def handle_text(message: Message) -> None:
 # Ishga tushirish (long polling, webhook talab qilinmaydi)
 # --------------------------------------------------------------------------
 
+async def start_healthcheck_server() -> None:
+    app = web.Application()
+    app.router.add_get("/", lambda r: web.Response(text="SARLO_UZ Bot is running!"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info(f"Healthcheck web server started on port {port}")
+
+
 async def main() -> None:
-    logger.info("SARLO_UZ bot ishga tushmoqda (long polling)...")
+    logger.info("SARLO_UZ bot ishga tushmoqda...")
+    await start_healthcheck_server()
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
