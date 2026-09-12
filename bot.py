@@ -3,8 +3,7 @@ SARLO_UZ Telegram Bot
 ---------------------
 Xweardan olingan mahsulot e'lonlarini avtomatik ravishda SARLO_UZ formatiga
 qayta formatlaydi: narxdan 1000 so'm ayiradi, LOOK nomini almashtiradi,
-buyurtma username'ini o'zgartiradi, "Отзыв" qatorini olib tashlaydi va
-o'zbekcha tarjimasini qo'shadi.
+buyurtma username'ini o'zgartiradi va "Отзыв" qatorini olib tashlaydi.
 
 Texnologiya: Python 3.11+, aiogram 3.x, long polling (webhook talab qilinmaydi).
 """
@@ -13,13 +12,13 @@ import asyncio
 import logging
 import os
 import re
-from typing import Callable, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart
-from aiogram.types import Message
+from aiogram.types import InputMediaPhoto, Message
 from aiohttp import web
 from dotenv import load_dotenv
 
@@ -54,11 +53,11 @@ dp = Dispatcher()
 # Regexlar
 # --------------------------------------------------------------------------
 
-LOOK_RE = re.compile(r"^(?P<bullet>[•\-\*]?\s*)LOOK\s*:\s*.*$", re.IGNORECASE)
+LOOK_RE = re.compile(r"LOOK\s*:\s*\S+", re.IGNORECASE)
 DIVIDER_RE = re.compile(r"^[—\-_=]{5,}\s*$")
 REVIEW_RE = re.compile(r".*\b(отзыв\w*|review\w*|isbot)\b.*", re.IGNORECASE)
 ORDER_RE = re.compile(
-    r"^(?P<bullet>[•\-\*]?\s*)(?:Для\s+заказа|Заказ|Order|Buyurtma\s+uchun)\s*:\s*(?P<user>@?\S+)",
+    r"(?:Для\s+заказа|Заказ|Order|Buyurtma\s+uchun)\s*:\s*@?\S+",
     re.IGNORECASE,
 )
 
@@ -80,89 +79,8 @@ EXCLUDE_PRICE_LINE_KEYWORDS = (
     "гр",
 )
 
-# --------------------------------------------------------------------------
-# Tarjima lug'atlari va qoidalari
-# --------------------------------------------------------------------------
-
-# Butun qatorni almashtiradigan aniq iboralar (regex -> template funksiyasi)
-PhraseRule = Tuple[re.Pattern, Callable[[re.Match], str]]
-
-PHRASE_RULES: List[PhraseRule] = [
-    (
-        re.compile(r"Карго\s*(\d+)\s*г?р\.?\s*=\s*([\d.,\s]+)", re.IGNORECASE),
-        lambda m: f"Kargo {m.group(1)}gr = {m.group(2).strip()}",
-    ),
-    (
-        re.compile(r"Предоплата\s*(\d+)\s*%", re.IGNORECASE),
-        lambda m: f"Oldindan to'lov {m.group(1)}%",
-    ),
-    (
-        re.compile(r"Доставка\s+по\s+Узбекистану", re.IGNORECASE),
-        lambda m: "O'zbekiston bo'ylab yetkazib berish",
-    ),
-    (
-        re.compile(r"Размеры\s+в\s+наличии", re.IGNORECASE),
-        lambda m: "Razmerlar mavjud",
-    ),
-    (
-        re.compile(r"Для\s+заказа\s*:", re.IGNORECASE),
-        lambda m: "Buyurtma uchun:",
-    ),
-]
-
-# Yakka so'zlar uchun zaxira lug'at (rang, material va boshqa umumiy so'zlar)
-WORD_MAP = {
-    # ranglar
-    "черный": "qora", "чёрный": "qora", "белый": "oq", "серый": "kulrang",
-    "красный": "qizil", "синий": "ko'k", "голубой": "moviy",
-    "зеленый": "yashil", "зелёный": "yashil", "желтый": "sariq", "жёлтый": "sariq",
-    "розовый": "pushti", "фиолетовый": "binafsha", "оранжевый": "to'q sariq",
-    "коричневый": "jigarrang", "бежевый": "bej", "бордовый": "bordo",
-    "хаки": "xaki", "серебристый": "kumush rang", "золотой": "oltin rang",
-    # materiallar
-    "хлопок": "paxta", "кожа": "teri", "замша": "zamsha", "джинс": "jins",
-    "шелк": "ipak", "шёлк": "ipak", "шерсть": "jun", "полиэстер": "poliester",
-    "трикотаж": "trikotaj", "вельвет": "velvet", "флис": "flis",
-    # umumiy so'zlar
-    "цвет": "rang", "цвета": "ranglar", "размер": "o'lcham", "размеры": "o'lchamlar",
-    "материал": "material", "модель": "model", "качество": "sifat",
-    "новинка": "yangilik", "скидка": "chegirma", "наличии": "mavjud",
-    "наличие": "mavjud", "заказ": "buyurtma", "заказа": "buyurtma",
-    "доставка": "yetkazib berish", "оплата": "to'lov", "предоплата": "oldindan to'lov",
-    "рост": "bo'y", "вес": "vazn", "унисекс": "unisex", "мужской": "erkaklar",
-    "женский": "ayollar", "детский": "bolalar", "хит": "hit", "продаж": "sotuv",
-}
-
-CYRILLIC_WORD_RE = re.compile(r"[А-Яа-яЁё]+")
-
-
-def translate_words(line: str) -> str:
-    """Lug'atda mavjud bo'lgan alohida so'zlarni o'zbekchaga almashtiradi."""
-
-    def repl(m: re.Match) -> str:
-        word = m.group(0)
-        translated = WORD_MAP.get(word.lower())
-        if not translated:
-            return word
-        if word[0].isupper():
-            translated = translated[0].upper() + translated[1:]
-        return translated
-
-    return CYRILLIC_WORD_RE.sub(repl, line)
-
-
-def translate_line(line: str) -> str:
-    """Qatorni avval aniq iboralar bo'yicha, so'ng so'z-so'z tarjima qiladi."""
-    result = line
-    matched_any = False
-    for pattern, repl in PHRASE_RULES:
-        if pattern.search(result):
-            result = pattern.sub(lambda m, r=repl: r(m), result)
-            matched_any = True
-    if not matched_any:
-        result = translate_words(result)
-    return result
-
+# Media Group (Albom) buferi: media_group_id -> [Message]
+MEDIA_GROUPS: Dict[str, List[Message]] = {}
 
 # --------------------------------------------------------------------------
 # Narx bilan ishlash
@@ -196,9 +114,9 @@ def find_main_price_line(lines: List[str]) -> Tuple[Optional[int], Optional[int]
         low = stripped.lower()
         if any(keyword in low for keyword in EXCLUDE_PRICE_LINE_KEYWORDS):
             continue
-        if LOOK_RE.match(stripped) or DIVIDER_RE.match(stripped):
+        if DIVIDER_RE.match(stripped) or REVIEW_RE.match(stripped):
             continue
-        if ORDER_RE.match(stripped) or REVIEW_RE.match(stripped):
+        if ORDER_RE.search(stripped):
             continue
         m = PRICE_LINE_RE.search(stripped)
         if m and m.group("num"):
@@ -230,9 +148,6 @@ def process_post(raw_text: str) -> str:
     main_price_idx, main_price_value, main_price_currency = find_main_price_line(lines)
 
     output_lines: List[str] = []
-    price_out_idx: Optional[int] = None
-    look_out_idx: Optional[int] = None
-    divider_out_idx: Optional[int] = None
 
     for idx, line in enumerate(lines):
         stripped = line.strip()
@@ -245,29 +160,18 @@ def process_post(raw_text: str) -> str:
             # Отзыв qatorini butunlay olib tashlaymiz
             continue
 
-        if DIVIDER_RE.match(stripped):
-            divider_out_idx = len(output_lines)
-            output_lines.append(line)
-            continue
+        processed_line = line
 
-        if LOOK_RE.match(stripped):
-            new_line = re.sub(r"LOOK\s*:\s*.*", f"LOOK: {SHOP_NAME}", line, flags=re.IGNORECASE)
-            look_out_idx = len(output_lines)
-            output_lines.append(new_line)
-            continue
+        if LOOK_RE.search(processed_line):
+            processed_line = LOOK_RE.sub(f"LOOK: {SHOP_NAME}", processed_line)
 
-        if ORDER_RE.match(stripped):
-            new_line = re.sub(r"@\S+", ORDER_USERNAME, line)
-            output_lines.append(new_line)
-            continue
+        if ORDER_RE.search(processed_line):
+            processed_line = re.sub(r"@\S+", ORDER_USERNAME, processed_line)
 
         if idx == main_price_idx:
-            new_line = replace_price_in_line(line, main_price_value, main_price_currency)
-            price_out_idx = len(output_lines)
-            output_lines.append(new_line)
-            continue
+            processed_line = replace_price_in_line(processed_line, main_price_value, main_price_currency)
 
-        output_lines.append(line)
+        output_lines.append(processed_line)
 
     # Bosh va oxiridagi bo'sh qatorlarni olib tashlash
     while output_lines and not output_lines[0].strip():
@@ -275,32 +179,7 @@ def process_post(raw_text: str) -> str:
     while output_lines and not output_lines[-1].strip():
         output_lines.pop()
 
-    russian_part = "\n".join(output_lines)
-
-    # --- O'zbekcha versiyani tuzish ---
-    skip_indices = {i for i in (price_out_idx, look_out_idx, divider_out_idx) if i is not None}
-    uzbek_lines: List[str] = []
-    for i, line in enumerate(output_lines):
-        if i in skip_indices:
-            continue
-        if not line.strip():
-            uzbek_lines.append(line)
-            continue
-        uzbek_lines.append(translate_line(line))
-
-    while uzbek_lines and not uzbek_lines[0].strip():
-        uzbek_lines.pop(0)
-    while uzbek_lines and not uzbek_lines[-1].strip():
-        uzbek_lines.pop()
-
-    uzbek_part = "\n".join(uzbek_lines)
-
-    if uzbek_part.strip():
-        final_text = f"{russian_part}\n\n🇺🇿 O‘ZBEKCHA\n\n{uzbek_part}"
-    else:
-        final_text = russian_part
-
-    return final_text
+    return "\n".join(output_lines)
 
 
 # --------------------------------------------------------------------------
@@ -313,10 +192,10 @@ START_TEXT = (
     "Men avtomatik:\n"
     "💰 Narxdan 1 000 so'm ayiraman\n"
     "🏷️ SARLO_UZ formatiga o'zgartiraman\n"
-    "🇺🇿 O'zbekcha versiyasini qo'shaman\n\n"
+    "👤 Buyurtma username'ini @sarlo_admin ga o'zgartiraman\n\n"
     "va tayyor postni qaytaraman.\n\n"
     "Matn yuborsangiz — tayyor matn qaytadi.\n"
-    "Rasm + caption yuborsangiz — rasm + yangi caption qaytadi."
+    "Rasm / albom + caption yuborsangiz — rasm / albom + yangi caption qaytadi."
 )
 
 
@@ -325,8 +204,53 @@ async def cmd_start(message: Message) -> None:
     await message.answer(START_TEXT)
 
 
-@dp.message(F.photo)
-async def handle_photo(message: Message) -> None:
+async def process_media_group(messages: List[Message]) -> None:
+    messages.sort(key=lambda m: m.message_id)
+
+    caption = ""
+    for msg in messages:
+        if msg.caption and msg.caption.strip():
+            caption = msg.caption
+            break
+
+    if not caption.strip():
+        await messages[0].answer(
+            "Rasm bilan birga mahsulot ma'lumotlari yozilgan caption (izoh) yuboring, iltimos."
+        )
+        return
+
+    try:
+        new_caption = process_post(caption)
+    except Exception:
+        logger.exception("Caption qayta ishlashda xatolik yuz berdi")
+        await messages[0].answer("Kechirasiz, caption'ni qayta ishlashda xatolik yuz berdi.")
+        return
+
+    media_group: List[InputMediaPhoto] = []
+    for idx, msg in enumerate(messages):
+        photo_file_id = msg.photo[-1].file_id
+        if idx == 0:
+            if len(new_caption) <= TELEGRAM_CAPTION_LIMIT:
+                media_group.append(
+                    InputMediaPhoto(media=photo_file_id, caption=new_caption)
+                )
+            else:
+                media_group.append(
+                    InputMediaPhoto(
+                        media=photo_file_id,
+                        caption="Tayyor matn quyidagi xabarda 👇 (caption uzun bo'lgani uchun)",
+                    )
+                )
+        else:
+            media_group.append(InputMediaPhoto(media=photo_file_id))
+
+    await messages[0].answer_media_group(media=media_group)
+
+    if len(new_caption) > TELEGRAM_CAPTION_LIMIT:
+        await messages[0].answer(new_caption)
+
+
+async def process_single_photo(message: Message) -> None:
     caption = message.caption or ""
     if not caption.strip():
         await message.answer(
@@ -346,13 +270,27 @@ async def handle_photo(message: Message) -> None:
     if len(new_caption) <= TELEGRAM_CAPTION_LIMIT:
         await message.answer_photo(photo=photo_file_id, caption=new_caption)
     else:
-        # Telegram caption uzunligi cheklangan (1024 belgi) — shuning uchun
-        # rasmni qisqa caption bilan, to'liq matnni esa alohida xabar sifatida yuboramiz.
         await message.answer_photo(
             photo=photo_file_id,
             caption="Tayyor matn quyidagi xabarda 👇 (caption uzun bo'lgani uchun)",
         )
         await message.answer(new_caption)
+
+
+@dp.message(F.photo)
+async def handle_photo(message: Message) -> None:
+    if message.media_group_id:
+        mg_id = message.media_group_id
+        if mg_id not in MEDIA_GROUPS:
+            MEDIA_GROUPS[mg_id] = [message]
+            await asyncio.sleep(0.6)
+            messages = MEDIA_GROUPS.pop(mg_id, [])
+            if messages:
+                await process_media_group(messages)
+        else:
+            MEDIA_GROUPS[mg_id].append(message)
+    else:
+        await process_single_photo(message)
 
 
 @dp.message(F.text)
